@@ -9,10 +9,23 @@ import (
 )
 
 var (
+	InfoNodeID     = []byte("nodeid")
 	InfoPeerSeed   = []byte("peer seed")
 	InfoPerPeer    = []byte("per-peer seed")
 	InfoCLightning = []byte("c-lightning")
 )
+
+// NodeKey derives a CLN node key from the given HSM secret.
+func NodeKey(hsmSecret [32]byte) (*btcec.PublicKey, error) {
+	salt := make([]byte, 4)
+	privKeyBytes, err := HkdfSha256(hsmSecret[:], salt, InfoNodeID)
+	if err != nil {
+		return nil, err
+	}
+
+	_, pubKey := btcec.PrivKeyFromBytes(privKeyBytes[:])
+	return pubKey, nil
+}
 
 // FundingKey derives a CLN channel funding key for the given peer and channel
 // number (incrementing database index).
