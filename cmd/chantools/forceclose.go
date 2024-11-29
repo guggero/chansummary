@@ -19,6 +19,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const forceCloseWarning = `
+If you are certain that a node is offline for good (AFTER you've tried SCB!)
+and a channel is still open, you can use this method to force-close your
+latest state that you have in your channel.db.
+
+**!!! WARNING !!! DANGER !!! WARNING !!!**
+
+If you do this and the state that you publish is *not* the latest state, then
+the remote node *could* punish you by taking the whole channel amount *if* they
+come online before you can sweep the funds from the time locked (144 - 2000
+blocks) transaction *or* they have a watch tower looking out for them.
+
+**This should absolutely be the last resort and you have been warned!**`
+
 type forceCloseCommand struct {
 	APIURL    string
 	ChannelDB string
@@ -35,18 +49,7 @@ func newForceCloseCommand() *cobra.Command {
 		Use: "forceclose",
 		Short: "Force-close the last state that is in the channel.db " +
 			"provided",
-		Long: `If you are certain that a node is offline for good (AFTER
-you've tried SCB!) and a channel is still open, you can use this method to
-force-close your latest state that you have in your channel.db.
-
-**!!! WARNING !!! DANGER !!! WARNING !!!**
-
-If you do this and the state that you publish is *not* the latest state, then
-the remote node *could* punish you by taking the whole channel amount *if* they
-come online before you can sweep the funds from the time locked (144 - 2000
-blocks) transaction *or* they have a watch tower looking out for them.
-
-**This should absolutely be the last resort and you have been warned!**`,
+		Long: forceCloseWarning,
 		Example: `chantools forceclose \
 	--fromsummary results/summary-xxxx-yyyy.json
 	--channeldb ~/.lnd/data/graph/mainnet/channel.db \

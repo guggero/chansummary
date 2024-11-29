@@ -15,6 +15,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightningnetwork/lnd/fn"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/shachain"
@@ -399,7 +400,10 @@ func P2TaprootStaticRemote(pubKey *btcec.PublicKey,
 	params *chaincfg.Params) (*btcutil.AddressTaproot,
 	*input.CommitScriptTree, error) {
 
-	scriptTree, err := input.NewRemoteCommitScriptTree(pubKey)
+	// FIXME: fill tapLeaf for Tapscript root channels.
+	var tapLeaf fn.Option[txscript.TapLeaf]
+
+	scriptTree, err := input.NewRemoteCommitScriptTree(pubKey, tapLeaf)
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not create script: %w", err)
 	}

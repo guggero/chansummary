@@ -136,7 +136,7 @@ func ConnectPeer(conn *brontide.Conn, connReq *connmgr.ConnReq,
 		ChannelUpdateInterval:   discovery.DefaultChannelUpdateInterval,
 		IsAlias:                 aliasmgr.IsAlias,
 		SignAliasUpdate: func(
-			*lnwire.ChannelUpdate) (*ecdsa.Signature, error) {
+			*lnwire.ChannelUpdate1) (*ecdsa.Signature, error) {
 
 			return nil, errors.New("unimplemented")
 		},
@@ -194,7 +194,7 @@ func ConnectPeer(conn *brontide.Conn, connReq *connmgr.ConnReq,
 		PrunePersistentPeerConnection: func(_ [33]byte) {},
 
 		FetchLastChanUpdate: func(_ lnwire.ShortChannelID) (
-			*lnwire.ChannelUpdate, error) {
+			*lnwire.ChannelUpdate1, error) {
 
 			return nil, errors.New("unimplemented")
 		},
@@ -223,7 +223,9 @@ func ConnectPeer(conn *brontide.Conn, connReq *connmgr.ConnReq,
 		RequestAlias: func() (lnwire.ShortChannelID, error) {
 			return lnwire.ShortChannelID{}, nil
 		},
-		AddLocalAlias: func(_, _ lnwire.ShortChannelID, _ bool) error {
+		AddLocalAlias: func(_, _ lnwire.ShortChannelID,
+			_, _ bool) error {
+
 			return nil
 		},
 		Quit: make(chan struct{}),

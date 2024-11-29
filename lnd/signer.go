@@ -20,7 +20,7 @@ import (
 )
 
 type Signer struct {
-	input.MockSigner
+	*input.MusigSessionManager
 
 	ExtendedKey *hdkeychain.ExtendedKey
 	ChainParams *chaincfg.Params
@@ -264,4 +264,27 @@ func ECDH(privKey *btcec.PrivateKey, pub *btcec.PublicKey) ([32]byte, error) {
 	s.ToAffine()
 	sPubKey := btcec.NewPublicKey(&s.X, &s.Y)
 	return sha256.Sum256(sPubKey.SerializeCompressed()), nil
+}
+
+// ECDH performs a scalar multiplication (ECDH-like operation) between
+// the target key descriptor and remote public key. The output
+// returned will be the sha256 of the resulting shared point serialized
+// in compressed format. If k is our private key, and P is the public
+// key, we perform the following operation:
+//
+//	sx := k*P
+//	s := sha256(sx.SerializeCompressed())
+//
+// NOTE: This is part of the keychain.ECDHRing interface.
+func (s *Signer) ECDH(keyDesc keychain.KeyDescriptor, pubKey *btcec.PublicKey) (
+	[32]byte, error) {
+
+	// First, derive the private key.
+	privKey, err := s.FetchPrivateKey(&keyDesc)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("failed to derive the private "+
+			"key: %w", err)
+	}
+
+	return ECDH(privKey, pubKey)
 }

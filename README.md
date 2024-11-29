@@ -39,7 +39,7 @@ $ sudo mv chantools-*/chantools /usr/local/bin/
 
 If there isn't a pre-built binary for your operating system or architecture
 available or you want to build `chantools` from source for another reason, you
-need to make sure you have `go 1.22.3` (or later) and `make` installed and can
+need to make sure you have `go 1.22.6` (or later) and `make` installed and can
 then run the following commands:
 
 ```bash

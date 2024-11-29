@@ -114,6 +114,7 @@ func main() {
 		newFilterBackupCommand(),
 		newFixOldBackupCommand(),
 		newForceCloseCommand(),
+		newScbForceCloseCommand(),
 		newGenImportScriptCommand(),
 		newMigrateDBCommand(),
 		newPullAnchorCommand(),
@@ -310,7 +311,9 @@ func setupLogging() {
 	addSubLogger("CHDB", channeldb.UseLogger)
 	addSubLogger("BCKP", chanbackup.UseLogger)
 	addSubLogger("PEER", peer.UseLogger)
-	err := logWriter.InitLogRotator("./results/chantools.log", 10, 3)
+	err := logWriter.InitLogRotator(
+		"./results/chantools.log", build.Gzip, 10, 3,
+	)
 	if err != nil {
 		panic(err)
 	}
