@@ -119,12 +119,17 @@ func (c *sweepRemoteClosedCommand) Execute(_ *cobra.Command, _ []string) error {
 	)
 }
 
+type utxo struct {
+	wire.TxOut
+	wire.OutPoint
+}
+
 type targetAddr struct {
 	addr       btcutil.Address
 	pubKey     *btcec.PublicKey
 	path       string
 	keyDesc    *keychain.KeyDescriptor
-	vouts      []*btc.Vout
+	utxos      []*utxo
 	script     []byte
 	scriptTree *input.CommitScriptTree
 }
@@ -193,35 +198,12 @@ func sweepRemoteClosed(extendedKey *hdkeychain.ExtendedKey, apiURL,
 
 	// Add all found target outputs.
 	for _, target := range targets {
-		for _, vout := range target.vouts {
-			totalOutputValue += vout.Value
+		for _, utxo := range target.utxos {
+			totalOutputValue += uint64(utxo.Value)
 
-			txHash, err := chainhash.NewHashFromStr(
-				vout.Outspend.Txid,
-			)
-			if err != nil {
-				return fmt.Errorf("error parsing tx hash: %w",
-					err)
-			}
-			pkScript, err := lnd.GetWitnessAddrScript(
-				target.addr, chainParams,
-			)
-			if err != nil {
-				return fmt.Errorf("error getting pk script: %w",
-					err)
-			}
-
-			prevOutPoint := wire.OutPoint{
-				Hash:  *txHash,
-				Index: uint32(vout.Outspend.Vin),
-			}
-			prevTxOut := &wire.TxOut{
-				PkScript: pkScript,
-				Value:    int64(vout.Value),
-			}
-			prevOutFetcher.AddPrevOut(prevOutPoint, prevTxOut)
+			prevOutFetcher.AddPrevOut(utxo.OutPoint, &utxo.TxOut)
 			txIn := &wire.TxIn{
-				PreviousOutPoint: prevOutPoint,
+				PreviousOutPoint: utxo.OutPoint,
 				Sequence:         wire.MaxTxInSequenceNum,
 			}
 			sweepTx.TxIn = append(sweepTx.TxIn, txIn)
@@ -235,7 +217,7 @@ func sweepRemoteClosed(extendedKey *hdkeychain.ExtendedKey, apiURL,
 				signDesc = &input.SignDescriptor{
 					KeyDesc:           *target.keyDesc,
 					WitnessScript:     target.script,
-					Output:            prevTxOut,
+					Output:            &utxo.TxOut,
 					HashType:          txscript.SigHashAll,
 					PrevOutputFetcher: prevOutFetcher,
 					InputIndex:        inputIndex,
@@ -250,7 +232,7 @@ func sweepRemoteClosed(extendedKey *hdkeychain.ExtendedKey, apiURL,
 				signDesc = &input.SignDescriptor{
 					KeyDesc:           *target.keyDesc,
 					WitnessScript:     target.script,
-					Output:            prevTxOut,
+					Output:            &utxo.TxOut,
 					HashType:          txscript.SigHashAll,
 					PrevOutputFetcher: prevOutFetcher,
 					InputIndex:        inputIndex,
@@ -279,7 +261,7 @@ func sweepRemoteClosed(extendedKey *hdkeychain.ExtendedKey, apiURL,
 				signDesc = &input.SignDescriptor{
 					KeyDesc:           *target.keyDesc,
 					WitnessScript:     script,
-					Output:            prevTxOut,
+					Output:            &utxo.TxOut,
 					HashType:          txscript.SigHashDefault,
 					PrevOutputFetcher: prevOutFetcher,
 					ControlBlock:      controlBlockBytes,
@@ -399,12 +381,18 @@ func queryAddressBalances(pubKey *btcec.PublicKey, path string,
 		if len(unspent) > 0 {
 			log.Infof("Found %d unspent outputs for address %v",
 				len(unspent), address.EncodeAddress())
+
+			utxos, err := parseUtxos(unspent)
+			if err != nil {
+				return err
+			}
+
 			targets = append(targets, &targetAddr{
 				addr:       address,
 				pubKey:     pubKey,
 				path:       path,
 				keyDesc:    keyDesc,
-				vouts:      unspent,
+				utxos:      utxos,
 				script:     script,
 				scriptTree: scriptTree,
 			})
@@ -438,4 +426,34 @@ func queryAddressBalances(pubKey *btcec.PublicKey, path string,
 	}
 
 	return targets, nil
+}
+
+func parseUtxos(vouts []*btc.Vout) ([]*utxo, error) {
+	utxos := make([]*utxo, len(vouts))
+	for idx, vout := range vouts {
+		txHash, err := chainhash.NewHashFromStr(vout.Outspend.Txid)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing tx hash: %w", err)
+		}
+
+		pkScript, err := hex.DecodeString(vout.ScriptPubkey)
+		if err != nil {
+			return nil, fmt.Errorf("error decoding script pubkey: "+
+				"%w", err)
+		}
+
+		utxos[idx] = &utxo{
+			TxOut: wire.TxOut{
+				PkScript: pkScript,
+				Value:    int64(vout.Value),
+			},
+			OutPoint: wire.OutPoint{
+				Hash:  *txHash,
+				Index: uint32(vout.Outspend.Vin),
+			},
+		}
+
+	}
+
+	return utxos, nil
 }
