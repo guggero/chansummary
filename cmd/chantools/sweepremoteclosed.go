@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -18,6 +21,9 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/spf13/cobra"
 )
+
+//go:embed sweepremoteclosed_ancient.json
+var ancientChannelPoints []byte
 
 const (
 	sweepRemoteClosedDefaultRecoveryWindow = 200
@@ -126,9 +132,8 @@ type utxo struct {
 
 type targetAddr struct {
 	addr       btcutil.Address
-	pubKey     *btcec.PublicKey
-	path       string
 	keyDesc    *keychain.KeyDescriptor
+	tweak      []byte
 	utxos      []*utxo
 	script     []byte
 	scriptTree *input.CommitScriptTree
@@ -188,6 +193,17 @@ func sweepRemoteClosed(extendedKey *hdkeychain.ExtendedKey, apiURL,
 		targets = append(targets, foundTargets...)
 	}
 
+	// Also check if there are any funds in channels with the initial,
+	// tweaked channel type that requires a channel point.
+	ancientChannelTargets, err := checkAncientChannelPoints(
+		api, recoveryWindow, extendedKey,
+	)
+	if err != nil {
+		return fmt.Errorf("could not check ancient channel points: %w",
+			err)
+	}
+	targets = append(targets, ancientChannelTargets...)
+
 	// Create estimator and transaction template.
 	var (
 		signDescs        []*input.SignDescriptor
@@ -217,6 +233,7 @@ func sweepRemoteClosed(extendedKey *hdkeychain.ExtendedKey, apiURL,
 				signDesc = &input.SignDescriptor{
 					KeyDesc:           *target.keyDesc,
 					WitnessScript:     target.script,
+					SingleTweak:       target.tweak,
 					Output:            &utxo.TxOut,
 					HashType:          txscript.SigHashAll,
 					PrevOutputFetcher: prevOutFetcher,
@@ -389,8 +406,6 @@ func queryAddressBalances(pubKey *btcec.PublicKey, path string,
 
 			targets = append(targets, &targetAddr{
 				addr:       address,
-				pubKey:     pubKey,
-				path:       path,
 				keyDesc:    keyDesc,
 				utxos:      utxos,
 				script:     script,
@@ -456,4 +471,96 @@ func parseUtxos(vouts []*btc.Vout) ([]*utxo, error) {
 	}
 
 	return utxos, nil
+}
+
+type ancientChannel struct {
+	OP   string `json:"close_outpoint"`
+	Addr string `json:"close_addr"`
+	CP   string `json:"commit_point"`
+}
+
+func checkAncientChannelPoints(api *btc.ExplorerAPI, numKeys uint32,
+	key *hdkeychain.ExtendedKey) ([]*targetAddr, error) {
+
+	var channels []*ancientChannel
+	err := json.Unmarshal(ancientChannelPoints, &channels)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := fillCache(numKeys, key); err != nil {
+		return nil, err
+	}
+
+	var foundChannels []*targetAddr
+	for _, channel := range channels {
+		op, err := lnd.ParseOutpoint(channel.OP)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse outpoint: %w",
+				err)
+		}
+
+		// Decode the commit point.
+		commitPointBytes, err := hex.DecodeString(channel.CP)
+		if err != nil {
+			return nil, fmt.Errorf("unable to decode commit "+
+				"point: %w", err)
+		}
+		commitPoint, err := btcec.ParsePubKey(commitPointBytes)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse commit "+
+				"point: %w", err)
+		}
+
+		// Create the address for the commit key.
+		addr, err := lnd.ParseAddress(channel.Addr, chainParams)
+		if err != nil {
+			return nil, err
+		}
+
+		keyDesc, tweak, err := keyInCache(
+			numKeys, addr.String(), commitPoint,
+		)
+		switch {
+		case err == nil:
+			log.Infof("Found private key for address %v in "+
+				"list of ancient channels!", addr)
+
+			tx, err := api.Transaction(op.Hash.String())
+			if err != nil {
+				return nil, fmt.Errorf("could not query "+
+					"transaction: %w", err)
+			}
+
+			pkScript, err := hex.DecodeString(
+				tx.Vout[op.Index].ScriptPubkey,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("could not decode "+
+					"script pubkey: %w", err)
+			}
+
+			txOut := wire.TxOut{
+				Value:    int64(tx.Vout[op.Index].Value),
+				PkScript: pkScript,
+			}
+			foundChannels = append(foundChannels, &targetAddr{
+				addr:    addr,
+				keyDesc: keyDesc,
+				tweak:   tweak,
+				utxos: []*utxo{{
+					OutPoint: *op,
+					TxOut:    txOut,
+				}},
+			})
+
+		case errors.Is(err, errAddrNotFound):
+			// Try next address.
+
+		default:
+			return nil, err
+		}
+	}
+
+	return foundChannels, nil
 }
