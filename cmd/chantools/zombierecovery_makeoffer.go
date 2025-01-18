@@ -183,22 +183,6 @@ func (c *zombieRecoveryMakeOfferCommand) Execute(_ *cobra.Command,
 		}
 	}
 
-	// If we're only matching, we can stop here.
-	if c.MatchOnly {
-		ourPubKeys, err := parseKeys(keys1.Node1.MultisigKeys)
-		if err != nil {
-			return fmt.Errorf("error parsing their keys: %w", err)
-		}
-
-		theirPubKeys, err := parseKeys(keys2.Node2.MultisigKeys)
-		if err != nil {
-			return fmt.Errorf("error parsing our keys: %w", err)
-		}
-		return matchKeys(
-			keys1.Channels, ourPubKeys, theirPubKeys, chainParams,
-		)
-	}
-
 	// Make sure one of the nodes is ours.
 	_, pubKey, _, err := lnd.DeriveKey(
 		extendedKey, lnd.IdentityPath(chainParams), chainParams,
@@ -275,6 +259,11 @@ func (c *zombieRecoveryMakeOfferCommand) Execute(_ *cobra.Command,
 	err = matchKeys(ourChannels, ourPubKeys, theirPubKeys, chainParams)
 	if err != nil {
 		return err
+	}
+
+	// If we're only matching, we can stop here.
+	if c.MatchOnly {
+		return nil
 	}
 
 	// Let's prepare the PSBT.

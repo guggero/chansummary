@@ -9,8 +9,10 @@ import (
 	"os"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/chantools/cln"
 	"github.com/lightninglabs/chantools/lnd"
 	"github.com/spf13/cobra"
 )
@@ -24,6 +26,8 @@ type zombieRecoveryPrepareKeysCommand struct {
 	PayoutAddr string
 
 	NumKeys uint32
+
+	HsmSecret string
 
 	rootKey *rootKey
 	cmd     *cobra.Command
@@ -58,6 +62,12 @@ correct ones for the matched channels.`,
 		&cc.NumKeys, "num_keys", numMultisigKeys, "the number of "+
 			"multisig keys to derive",
 	)
+	cc.cmd.Flags().StringVar(
+		&cc.HsmSecret, "hsm_secret", "", "the hex encoded HSM secret "+
+			"to use for deriving the multisig keys for a CLN "+
+			"node; obtain by running 'xxd -p -c32 "+
+			"~/.lightning/bitcoin/hsm_secret'",
+	)
 
 	cc.rootKey = newRootKey(cc.cmd, "deriving the multisig keys")
 
@@ -67,12 +77,7 @@ correct ones for the matched channels.`,
 func (c *zombieRecoveryPrepareKeysCommand) Execute(_ *cobra.Command,
 	_ []string) error {
 
-	extendedKey, err := c.rootKey.read()
-	if err != nil {
-		return fmt.Errorf("error reading root key: %w", err)
-	}
-
-	err = lnd.CheckAddress(
+	err := lnd.CheckAddress(
 		c.PayoutAddr, chainParams, false, "payout", lnd.AddrTypeP2WKH,
 		lnd.AddrTypeP2TR,
 	)
@@ -98,19 +103,51 @@ func (c *zombieRecoveryPrepareKeysCommand) Execute(_ *cobra.Command,
 		return errors.New("invalid match file, node info missing")
 	}
 
+	// Derive the keys for the node type, depending on the input flags.
+	var pubKeyStr string
+	switch {
+	case c.HsmSecret != "":
+		pubKeyStr, err = c.clnDeriveKeys(&match)
+	default:
+		pubKeyStr, err = c.lndDeriveKeys(&match)
+	}
+	if err != nil {
+		return err
+	}
+
+	// Write the result back into a new file.
+	matchBytes, err := json.MarshalIndent(match, "", " ")
+	if err != nil {
+		return err
+	}
+
+	fileName := fmt.Sprintf("results/preparedkeys-%s-%s.json",
+		time.Now().Format("2006-01-02"), pubKeyStr)
+	log.Infof("Writing result to %s", fileName)
+	return os.WriteFile(fileName, matchBytes, 0644)
+}
+
+func (c *zombieRecoveryPrepareKeysCommand) lndDeriveKeys(match *match) (string,
+	error) {
+
+	extendedKey, err := c.rootKey.read()
+	if err != nil {
+		return "", fmt.Errorf("error reading root key: %w", err)
+	}
+
 	_, pubKey, _, err := lnd.DeriveKey(
 		extendedKey, lnd.IdentityPath(chainParams), chainParams,
 	)
 	if err != nil {
-		return fmt.Errorf("error deriving identity pubkey: %w", err)
+		return "", fmt.Errorf("error deriving identity pubkey: %w", err)
 	}
 
 	pubKeyStr := hex.EncodeToString(pubKey.SerializeCompressed())
 	var nodeInfo *nodeInfo
 	switch {
 	case match.Node1.PubKey != pubKeyStr && match.Node2.PubKey != pubKeyStr:
-		return fmt.Errorf("derived pubkey %s from seed but that key "+
-			"was not found in the match file %s", pubKeyStr,
+		return "", fmt.Errorf("derived pubkey %s from seed but that "+
+			"key was not found in the match file %s", pubKeyStr,
 			c.MatchFile)
 
 	case match.Node1.PubKey == pubKeyStr:
@@ -126,7 +163,7 @@ func (c *zombieRecoveryPrepareKeysCommand) Execute(_ *cobra.Command,
 		matchChannel := match.Channels[idx]
 		addr, err := lnd.ParseAddress(matchChannel.Address, chainParams)
 		if err != nil {
-			return fmt.Errorf("error parsing channel funding "+
+			return "", fmt.Errorf("error parsing channel funding "+
 				"address '%s': %w", matchChannel.Address, err)
 		}
 
@@ -136,14 +173,14 @@ func (c *zombieRecoveryPrepareKeysCommand) Execute(_ *cobra.Command,
 				matchChannel.ChanPoint,
 			)
 			if err != nil {
-				return fmt.Errorf("error parsing channel "+
+				return "", fmt.Errorf("error parsing channel "+
 					"point %s: %w", matchChannel.ChanPoint,
 					err)
 			}
 
 			var randomness [32]byte
 			if _, err := rand.Read(randomness[:]); err != nil {
-				return err
+				return "", err
 			}
 
 			nonces, err := lnd.GenerateMuSig2Nonces(
@@ -151,8 +188,8 @@ func (c *zombieRecoveryPrepareKeysCommand) Execute(_ *cobra.Command,
 				nil,
 			)
 			if err != nil {
-				return fmt.Errorf("error generating MuSig2 "+
-					"nonces: %w", err)
+				return "", fmt.Errorf("error generating "+
+					"MuSig2 nonces: %w", err)
 			}
 
 			matchChannel.MuSig2NonceRandomness = hex.EncodeToString(
@@ -171,8 +208,8 @@ func (c *zombieRecoveryPrepareKeysCommand) Execute(_ *cobra.Command,
 			chainParams,
 		)
 		if err != nil {
-			return fmt.Errorf("error deriving multisig pubkey: %w",
-				err)
+			return "", fmt.Errorf("error deriving multisig "+
+				"pubkey: %w", err)
 		}
 
 		nodeInfo.MultisigKeys = append(
@@ -182,14 +219,67 @@ func (c *zombieRecoveryPrepareKeysCommand) Execute(_ *cobra.Command,
 	}
 	nodeInfo.PayoutAddr = c.PayoutAddr
 
-	// Write the result back into a new file.
-	matchBytes, err := json.MarshalIndent(match, "", " ")
+	return pubKeyStr, nil
+}
+
+func (c *zombieRecoveryPrepareKeysCommand) clnDeriveKeys(match *match) (string,
+	error) {
+
+	secretBytes, err := hex.DecodeString(c.HsmSecret)
 	if err != nil {
-		return err
+		return "", fmt.Errorf("error decoding HSM secret: %w", err)
 	}
 
-	fileName := fmt.Sprintf("results/preparedkeys-%s-%s.json",
-		time.Now().Format("2006-01-02"), pubKeyStr)
-	log.Infof("Writing result to %s", fileName)
-	return os.WriteFile(fileName, matchBytes, 0644)
+	var hsmSecret [32]byte
+	copy(hsmSecret[:], secretBytes)
+
+	nodePubKey, err := cln.NodeKey(hsmSecret)
+	if err != nil {
+		return "", fmt.Errorf("error deriving node pubkey: %w", err)
+	}
+
+	pubKeyStr := hex.EncodeToString(nodePubKey.SerializeCompressed())
+	var ourNodeInfo, theirNodeInfo *nodeInfo
+	switch {
+	case match.Node1.PubKey != pubKeyStr && match.Node2.PubKey != pubKeyStr:
+		return "", fmt.Errorf("derived pubkey %s from seed but that "+
+			"key was not found in the match file %s", pubKeyStr,
+			c.MatchFile)
+
+	case match.Node1.PubKey == pubKeyStr:
+		ourNodeInfo = match.Node1
+		theirNodeInfo = match.Node2
+
+	default:
+		ourNodeInfo = match.Node2
+		theirNodeInfo = match.Node1
+	}
+
+	theirNodeKeyBytes, err := hex.DecodeString(theirNodeInfo.PubKey)
+	if err != nil {
+		return "", fmt.Errorf("error decoding peer pubkey: %w", err)
+	}
+	theirNodeKey, err := btcec.ParsePubKey(theirNodeKeyBytes)
+	if err != nil {
+		return "", fmt.Errorf("error parsing peer pubkey: %w", err)
+	}
+
+	// Derive all 2500 keys now, this might take a while.
+	for index := range c.NumKeys {
+		pubKey, err := cln.FundingKey(
+			hsmSecret, theirNodeKey, uint64(index),
+		)
+		if err != nil {
+			return "", fmt.Errorf("error deriving multisig "+
+				"pubkey: %w", err)
+		}
+
+		ourNodeInfo.MultisigKeys = append(
+			ourNodeInfo.MultisigKeys,
+			hex.EncodeToString(pubKey.SerializeCompressed()),
+		)
+	}
+	ourNodeInfo.PayoutAddr = c.PayoutAddr
+
+	return pubKeyStr, nil
 }
