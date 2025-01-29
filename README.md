@@ -420,6 +420,7 @@ Available Commands:
   dropgraphzombies    Remove all channels identified as zombies from the graph to force a re-sync of the graph
   dumpbackup          Dump the content of a channel.backup file
   dumpchannels        Dump all channel information from an lnd channel database
+  dropheighthintcache Remove all height hint cache data from the channel DB.
   fakechanbackup      Fake a channel backup file to attempt fund recovery
   filterbackup        Filter an lnd channel.backup file and remove certain channels
   fixoldbackup        Fixes an old channel.backup file that is affected by the lnd issue #3881 (unable to derive shachain root key)
