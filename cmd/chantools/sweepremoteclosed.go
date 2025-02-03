@@ -198,11 +198,14 @@ func sweepRemoteClosed(extendedKey *hdkeychain.ExtendedKey, apiURL,
 	ancientChannelTargets, err := checkAncientChannelPoints(
 		api, recoveryWindow, extendedKey,
 	)
-	if err != nil {
+	if err != nil && !errors.Is(err, errAddrNotFound) {
 		return fmt.Errorf("could not check ancient channel points: %w",
 			err)
 	}
-	targets = append(targets, ancientChannelTargets...)
+
+	if len(ancientChannelTargets) > 0 {
+		targets = append(targets, ancientChannelTargets...)
+	}
 
 	// Create estimator and transaction template.
 	var (
@@ -479,27 +482,15 @@ type ancientChannel struct {
 	CP   string `json:"commit_point"`
 }
 
-func checkAncientChannelPoints(api *btc.ExplorerAPI, numKeys uint32,
-	key *hdkeychain.ExtendedKey) ([]*targetAddr, error) {
-
-	var channels []*ancientChannel
-	err := json.Unmarshal(ancientChannelPoints, &channels)
-	if err != nil {
-		return nil, err
-	}
+func findAncientChannels(channels []ancientChannel, numKeys uint32,
+	key *hdkeychain.ExtendedKey) ([]ancientChannel, error) {
 
 	if err := fillCache(numKeys, key); err != nil {
 		return nil, err
 	}
 
-	var foundChannels []*targetAddr
+	var foundChannels []ancientChannel
 	for _, channel := range channels {
-		op, err := lnd.ParseOutpoint(channel.OP)
-		if err != nil {
-			return nil, fmt.Errorf("unable to parse outpoint: %w",
-				err)
-		}
-
 		// Decode the commit point.
 		commitPointBytes, err := hex.DecodeString(channel.CP)
 		if err != nil {
@@ -518,41 +509,10 @@ func checkAncientChannelPoints(api *btc.ExplorerAPI, numKeys uint32,
 			return nil, err
 		}
 
-		keyDesc, tweak, err := keyInCache(
-			numKeys, addr.String(), commitPoint,
-		)
+		_, _, err = keyInCache(numKeys, addr.String(), commitPoint)
 		switch {
 		case err == nil:
-			log.Infof("Found private key for address %v in "+
-				"list of ancient channels!", addr)
-
-			tx, err := api.Transaction(op.Hash.String())
-			if err != nil {
-				return nil, fmt.Errorf("could not query "+
-					"transaction: %w", err)
-			}
-
-			pkScript, err := hex.DecodeString(
-				tx.Vout[op.Index].ScriptPubkey,
-			)
-			if err != nil {
-				return nil, fmt.Errorf("could not decode "+
-					"script pubkey: %w", err)
-			}
-
-			txOut := wire.TxOut{
-				Value:    int64(tx.Vout[op.Index].Value),
-				PkScript: pkScript,
-			}
-			foundChannels = append(foundChannels, &targetAddr{
-				addr:    addr,
-				keyDesc: keyDesc,
-				tweak:   tweak,
-				utxos: []*utxo{{
-					OutPoint: *op,
-					TxOut:    txOut,
-				}},
-			})
+			foundChannels = append(foundChannels, channel)
 
 		case errors.Is(err, errAddrNotFound):
 			// Try next address.
@@ -563,4 +523,87 @@ func checkAncientChannelPoints(api *btc.ExplorerAPI, numKeys uint32,
 	}
 
 	return foundChannels, nil
+}
+
+func checkAncientChannelPoints(api *btc.ExplorerAPI, numKeys uint32,
+	key *hdkeychain.ExtendedKey) ([]*targetAddr, error) {
+
+	var channels []ancientChannel
+	err := json.Unmarshal(ancientChannelPoints, &channels)
+	if err != nil {
+		return nil, err
+	}
+
+	ancientChannels, err := findAncientChannels(channels, numKeys, key)
+	if err != nil {
+		return nil, err
+	}
+
+	var targets []*targetAddr
+	for _, ancientChannel := range ancientChannels {
+		op, err := lnd.ParseOutpoint(ancientChannel.OP)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse outpoint: %w",
+				err)
+		}
+
+		// Decode the commit point.
+		commitPointBytes, err := hex.DecodeString(ancientChannel.CP)
+		if err != nil {
+			return nil, fmt.Errorf("unable to decode commit "+
+				"point: %w", err)
+		}
+		commitPoint, err := btcec.ParsePubKey(commitPointBytes)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse commit point: "+
+				"%w", err)
+		}
+
+		// Create the address for the commit key.
+		addr, err := lnd.ParseAddress(ancientChannel.Addr, chainParams)
+		if err != nil {
+			return nil, err
+		}
+
+		log.Infof("Found private key for address %v in list of "+
+			"ancient channels!", addr)
+
+		tx, err := api.Transaction(op.Hash.String())
+		if err != nil {
+			return nil, fmt.Errorf("could not query transaction: "+
+				"%w", err)
+		}
+
+		pkScript, err := hex.DecodeString(
+			tx.Vout[op.Index].ScriptPubkey,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("could not decode script "+
+				"pubkey: %w", err)
+		}
+
+		txOut := wire.TxOut{
+			Value:    int64(tx.Vout[op.Index].Value),
+			PkScript: pkScript,
+		}
+
+		keyDesc, tweak, err := keyInCache(
+			numKeys, addr.String(), commitPoint,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		targets = append(targets, &targetAddr{
+			addr:    addr,
+			keyDesc: keyDesc,
+			tweak:   tweak,
+			utxos: []*utxo{{
+				OutPoint: *op,
+				TxOut:    txOut,
+			}},
+		})
+	}
+
+	return targets, nil
 }

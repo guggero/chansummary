@@ -1,7 +1,7 @@
 [
   {
-    "close_outpoint": "7a39f00efc7efa75905e2f8d26bebbca7443bc019c4b089d2d6712dc75bf104e:1",
-    "close_addr": "bc1qj7ppsn4axls60g6vdc6yhwht2yawkn8wg59tx3",
-    "commit_point": "0267586e510d80fab314fbfa091f383b775646e7a87bc9ed8cd59bcded50405d6a"
+    "close_outpoint": "35e5aafcc03a4eacaed492d44815fea553f5434b881ecb5d9edcd094c899c074:0",
+    "close_addr": "bcrt1q43tqzm23a8ld9qdpfp7feut5yc20rtewlyrue4",
+    "commit_point": "023fc323c1768102c214f550551a102f88c0f261a4b8e7cc998c0dce28b6998d3c"
   }
 ]
